@@ -1,6 +1,7 @@
 import http from "http";
 import { IncomingMessage, ServerResponse } from "http";
 
+// Contact Interface
 interface Contact {
   id: number;
   phoneNumber: string;
@@ -8,12 +9,15 @@ interface Contact {
   linkedId: number | null;
 }
 
-const con: Contact[] = [];
+// In-memory contact Array
+const contacts: Contact[] = [];
 
+//send error response
 const errorResponse = (message: string, statusCode = 400) => {
   return { message, statusCode };
 };
 
+// Parse request body
 const parseBody = (req: IncomingMessage): Promise<any> => {
   return new Promise((resolve) => {
     let body = "";
@@ -28,79 +32,109 @@ const parseBody = (req: IncomingMessage): Promise<any> => {
   });
 };
 
-function send(res: ServerResponse, statusCode: number, data: any): void {
+// Send JSON response
+const send = (res: ServerResponse, statusCode: number, data: any): void => {
   res.writeHead(statusCode, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
-}
+};
 
-const buildResponse = (primaryId: number, contacts: Contact[]) => {
-  const primaryContact = contacts.find((c) => c.id === primaryId);
+// Build structured response
+const buildResponse = (primaryId: number, contactsList: Contact[]) => {
+  const primaryContact = contactsList.find((c) => c.id === primaryId);
   if (!primaryContact) {
-    return errorResponse("Primary");
+    return errorResponse("Primary contact not found");
   }
-  const relatedContacts = contacts.filter(
+
+  const relatedContacts = contactsList.filter(
     (c) => c.id === primaryId || c.linkedId === primaryId
   );
-  const secondaryContacts = relatedContacts.filter((f) => f.id !== primaryId);
 
-  const emails = [
-    primaryContact.email,
-    ...secondaryContacts.map((e) => e.email),
-  ];
-  const phoneNumebers = [
-    primaryContact.phoneNumber,
-    ...secondaryContacts.map((p) => p.phoneNumber),
-  ];
-  const secondaryContactIds = [...secondaryContacts.map((i) => i.id)];
+  const secondaryContacts = relatedContacts.filter((c) => c.id !== primaryId);
+
+  const emails = Array.from(
+    new Set([primaryContact.email, ...secondaryContacts.map((c) => c.email)])
+  );
+
+  const phoneNumbers = Array.from(
+    new Set([
+      primaryContact.phoneNumber,
+      ...secondaryContacts.map((c) => c.phoneNumber),
+    ])
+  );
+
+  const secondaryContactIds = secondaryContacts.map((c) => c.id);
 
   return {
     contact: {
       primaryContactId: primaryId,
       emails,
-      phoneNumebers,
+      phoneNumbers,
       secondaryContactIds,
     },
   };
 };
+
+// Server
 const server = http.createServer(
   async (req: IncomingMessage, res: ServerResponse) => {
     const { method, url } = req;
 
     if (method === "POST" && url === "/identify") {
       const { email, phoneNumber } = await parseBody(req);
+
       if (!email || !phoneNumber) {
         return send(
           res,
           400,
-          errorResponse("email and phone number are required!!")
+          errorResponse("Email and phone number are required!")
         );
       }
-      const userEmail = con.find((u) => u.email === email);
-      const userPhone = con.find((u) => u.phoneNumber === phoneNumber);
-      if (!userEmail && !userPhone) {
-        const preId = Date.now();
-        con.push({ id: preId, phoneNumber, email, linkedId: null });
-        const data= buildResponse(preId, con);
-        return send(res,201,data);
-      } else if (userEmail && !userPhone) {
-        const eIndex = con.findIndex((u) => u.email === email);
-        console.log("eindex", eIndex);
-        const preId = Date.now();
-        con.push({ id: preId, phoneNumber, email, linkedId: eIndex });
-        const data= buildResponse(preId, con);
-        return send(res,201,data);
+
+      const contactByEmail = contacts.find((c) => c.email === email);
+      const contactByPhone = contacts.find((c) => c.phoneNumber === phoneNumber);
+
+      if (!contactByEmail && !contactByPhone) {
+        const newId = Date.now();
+        contacts.push({ id: newId, phoneNumber, email, linkedId: null });
+        const response = buildResponse(newId, contacts);
+        return send(res, 201, response);
       } else {
-        const pIndex = con.findIndex((u) => u.phoneNumber === phoneNumber);
-        const preId = Date.now();
-        con.push({ id: preId, phoneNumber, email, linkedId: null });
-        console.log("pIndex", pIndex);
-        const data= buildResponse(preId, con);
-        return send(res,201,data);
+        const primaryContact =
+          contactByPhone || contactByEmail || contacts[0]; // fallback
+
+        const newId = Date.now();
+        contacts.push({
+          id: newId,
+          phoneNumber,
+          email,
+          linkedId: primaryContact.id,
+        });
+
+        const response = buildResponse(primaryContact.id, contacts);
+        return send(res, 201, response);
       }
     }
-    
-  });
 
-  server.listen(3000, () =>
-      console.log("Server running at http://localhost:3000")
-    );
+    if (method === "GET" && url?.startsWith("/view/")) {
+      const idStr = url.split("/")[2];
+      const id = Number(idStr);
+
+      const contact = contacts.find((c) => c.id === id);
+      if (contact) {
+        const response = buildResponse(contact.id, contacts);
+        return send(res, 200, response);
+      }
+      return send(res, 404, errorResponse("Contact ID not found", 404));
+    }
+
+    if (method === "GET" && url === "/view") {
+      return send(res, 200, contacts);
+    }
+
+    return send(res, 404, errorResponse("Route not found", 404));
+  }
+);
+
+server.listen(3000, () =>
+  console.log("Server running at http://localhost:3000")
+);
